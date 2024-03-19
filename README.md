@@ -61,3 +61,18 @@ python search_with_langchain.py
 
 3. Visit your local conversational search engine at http://localhost:8080/ !
 
+## Error Handling
+
+1. prettier/prettier
+
+If you have encounter something like
+```shell
+ Error: Delete `␍`  prettier/prettier
+```
+during build, visit `web/.eslintrc.json` and add a line to turn prettier/prettier off like this. (That's how I get around this anyway.)
+```json
+"rules": {
+    "unused-imports/no-unused-imports": "error",
+    "prettier/prettier": "off"
+  }
+```
