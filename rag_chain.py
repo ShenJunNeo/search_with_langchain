@@ -20,9 +20,9 @@ import json
 
 # ===========================================================
 # set service keys
-NVAPI_KEY = 'nvapi-xxx'
-SEARCH_API_KEY_GOOGLE = "xxx"                                          
-SEARCH_ID_GOOGLE = "xxx" # cx parameter                                                     
+NVAPI_KEY = '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'
+SEARCH_API_KEY_GOOGLE = "AIzaSyCXumb-vd4F6jFJIguwMFgVjhDkF3MgEMs"                                           # [Caution] Private Key here !
+SEARCH_ID_GOOGLE = "32a0648fe64f242c9" # cx parameter                                                    
 
 
 # ===========================================================
@@ -84,19 +84,20 @@ def search_with_google(query: str, subscription_key: str, cx: str):
             if 'title' in context:
                 context['name'] = context.pop('title')
             if 'pagemap' in context:
-                # Extracting the og:image URL, width, and height
-                og_image_url = context['pagemap']['metatags'][0].get('og:image', '')
-                og_image_width = context['pagemap']['metatags'][0].get('og:image:width', '')
-                og_image_height = context['pagemap']['metatags'][0].get('og:image:height', '')
+                if 'metatags' in context['pagemap']:
+                    # Extracting the og:image URL, width, and height
+                    og_image_url = context['pagemap']['metatags'][0].get('og:image', '')
+                    og_image_width = context['pagemap']['metatags'][0].get('og:image:width', '')
+                    og_image_height = context['pagemap']['metatags'][0].get('og:image:height', '')
 
-                # Modifying the data structure to add primaryImageOfPage at the top level
-                context['primaryImageOfPage'] = {
-                    'thumbnailUrl': og_image_url,
-                    'width': og_image_width,
-                    'height': og_image_height,
-                    # Assuming imageId is not available in the original data, and og:image URL is used as a placeholder
-                    'imageId': og_image_url.split('/')[-1] # Extracting the filename as an imageId
-                }
+                    # Modifying the data structure to add primaryImageOfPage at the top level
+                    context['primaryImageOfPage'] = {
+                        'thumbnailUrl': og_image_url,
+                        'width': og_image_width,
+                        'height': og_image_height,
+                        # Assuming imageId is not available in the original data, and og:image URL is used as a placeholder
+                        'imageId': og_image_url.split('/')[-1] # Extracting the filename as an imageId
+                    }
     except KeyError:
         logger.error(f"Error encountered: {json_content}")
         return []
