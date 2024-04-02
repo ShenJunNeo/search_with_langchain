@@ -20,9 +20,9 @@ import json
 
 # ===========================================================
 # set service keys
-NVAPI_KEY = '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'
-SEARCH_API_KEY_GOOGLE = "AIzaSyCXumb-vd4F6jFJIguwMFgVjhDkF3MgEMs"                                           # [Caution] Private Key here !
-SEARCH_ID_GOOGLE = "32a0648fe64f242c9" # cx parameter                                                    
+NVAPI_KEY = 'nvapi-xxx'
+SEARCH_API_KEY_GOOGLE = "xxx"                                           # [Caution] Private Key here !
+SEARCH_ID_GOOGLE = "xxx" # cx parameter                                                    
 
 
 # ===========================================================
@@ -36,7 +36,6 @@ if not os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi-"):
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
 llm = ChatNVIDIA(model="mixtral_8x7b")
-
 
 
 # ===========================================================
@@ -221,22 +220,23 @@ def search_with_llm(search_query, generate_related_questions=True):
     # -------------------------------------------------------
     # Search the web
     agent_context, frontend_contexts = prepare_search_results(search_with_google(result_query['query'], SEARCH_API_KEY_GOOGLE, SEARCH_ID_GOOGLE), get_raw=True)
-
+    yield "contexts", frontend_contexts
     # -------------------------------------------------------
     # Answer Chain
 
     # Define prompt template
     answer_prompt = ChatPromptTemplate.from_messages([
         ("system", """
-    You are a large language AI assistant built by Neutrino AI™. You are given a user question, and please write clean, concise and accurate answer to the question. You will be given a set of related contexts to the question, each starting with a reference number like [[citation:x]], where x is a number. Please use the context and cite the context at the end of each sentence if applicable.
+You are a large language AI assistant built by Neutrino AI™. You are given a user question, and please write clean, concise and accurate answer to the question. You will be given a set of related contexts to the question, each starting with a reference number like [[citation:x]], where x is a number. Please use the context and cite the context at the end of each sentence if applicable.
 
-    Your answer must be correct, accurate and written by an expert using an unbiased and professional tone. Please limit to 1024 tokens. Do not give any information that is not related to the question, and do not repeat. Say "information is missing on" followed by the related topic, if the given context do not provide sufficient information.
+Your answer must be correct, accurate and written by an expert using an unbiased and professional tone. Do not give any information that is not related to the question, and do not repeat. Say "information is missing on" followed by the related topic, if the given context do not provide sufficient information.
 
-    Please cite the contexts with the reference numbers, in the format [citation:x]. If a sentence comes from multiple contexts, please list all applicable citations, like [citation:3][citation:5]. Other than code and specific names and citations, your answer must be written in the same language as the question.
+Please cite the contexts with the reference numbers, in the format [citation:x]. If a sentence comes from multiple contexts, please list all applicable citations, like [citation:3][citation:5]. Other than code and specific names and citations, your answer must be written in the same language as the question.
 
-    Here are the set of contexts:
-
-    {context}
+Here are the set of contexts:
+```
+{context}
+```
     """),
         ("user", "{input}")
     ])
@@ -250,20 +250,20 @@ def search_with_llm(search_query, generate_related_questions=True):
 
     answer_chain = answer_prompt | llm | str_parser
     result = answer_chain.invoke({"input": search_query}, config={'callbacks': [AgentVerbose()]})
-
+    yield "llm_response", result
     # -------------------------------------------------------
     # Generate Related Questions
     if generate_related_questions:
         # Define prompt template
         related_q_prompt = ChatPromptTemplate.from_messages([
             ("system", """
-        You are a helpful assistant that helps the user to ask related questions, based on user's original question and the related contexts. Please identify worthwhile topics that can be follow-ups, and write questions no longer than 20 words each. Please make sure that specifics, like events, names, locations, are included in follow up questions so they can be asked standalone. For example, if the original question asks about "the Manhattan project", in the follow up question, do not just say "the project", but use the full name "the Manhattan project". Your related questions must be in the same language as `Human`.
+You are a helpful assistant that helps the user to ask related questions, based on user's original question and the related contexts. Please identify worthwhile topics that can be follow-ups, and write questions no longer than 20 words each. Please make sure that specifics, like events, names, locations, are included in follow up questions so they can be asked standalone. For example, if the original question asks about "the Manhattan project", in the follow up question, do not just say "the project", but use the full name "the Manhattan project". Your related questions must be in the same language as `Human`.
 
-        Here are the contexts of the question:
-
-        {context}
-
-        Remember, based on the original question and related contexts, suggest three such further questions. Do NOT repeat the original question. Each related question should be no longer than 20 words. Do NOT include comma in each question. \n\n{format_instructions}
+Here are the contexts of the question:
+```
+{context}
+```
+Remember, based on the original question and related contexts, suggest three such further questions. Do NOT repeat the original question. Each related question should be no longer than 20 words. Do NOT include comma in each question. \n\n{format_instructions}
         """),
             ("user", "{input}")
         ])
@@ -282,16 +282,17 @@ def search_with_llm(search_query, generate_related_questions=True):
         
         try:
             questions_list = associate_chain.invoke({"input": search_query}, config={'callbacks': [AgentVerbose()]})
+            # questions_list = associate_chain.invoke({"input": search_query})
             # 将每个问题转换为一个字典，键为"question"
             related_questions = [{"question": question} for question in questions_list]
             # 转换为JSON格式的字符串
             # related_questions = json.dumps(questions_json)
         except Exception as e:
             related_questions = '[]'
+        yield "related_questions", related_questions
+        # return frontend_contexts, result, related_questions
 
-        return frontend_contexts, result, related_questions
-
-    return frontend_contexts, result
+    # return frontend_contexts, result
 
 if __name__ == "__main__":
     def print_test_sub(test_sub):

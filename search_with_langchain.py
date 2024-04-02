@@ -72,27 +72,30 @@ executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
 should_do_related_questions = True
 
 
-def _raw_stream_response(contexts, llm_response, related_questions) -> Generator[str, None, None]:
+def _raw_stream_response(results) -> Generator[str, None, None]:
     """
-    A generator that yields the raw stream response.
+    A generator that yields the raw stream response from processed results.
+    
+    Parameters:
+    - results: A list of tuples, each containing a step name and data from the `search_with_llm` execution.
     """
-    # First, yield the contexts.
-    yield json.dumps(contexts)
-    yield "\n\n__LLM_RESPONSE__\n\n"
-    # Second, yield the llm response.
-    if not contexts:
-        # Prepend a warning to the user
-        yield "(The search engine returned nothing for this query. Please take the answer with a grain of salt.)\n\n"
-    yield llm_response
-    # Third, yield the related questions. If any error happens, we will just
-    # return an empty list.
-    if related_questions is not None:
-        try:
-            result = json.dumps(related_questions)
-        except Exception as e:
-            result = "[]"
-        yield "\n\n__RELATED_QUESTIONS__\n\n"
-        yield result
+    for step, data in results:
+        if step == "contexts":
+            # Yield the contexts as a JSON string
+            yield json.dumps(data) + "\n\n__LLM_RESPONSE__\n\n"
+        elif step == "llm_response":
+            # Prepend a warning if necessary, then yield the LLM response
+            if not data:
+                yield "(The search engine returned nothing for this query. Please take the answer with a grain of salt.)\n\n"
+            yield data
+        elif step == "related_questions":
+            # Try to dump the related questions as JSON, handle exceptions
+            try:
+                result = json.dumps(data)
+            except Exception as e:
+                result = "[]"
+            yield "\n\n__RELATED_QUESTIONS__\n\n" + result
+
 
 @app.post("/query")
 async def query_function(body: QueryRequest) -> StreamingResponse:
@@ -116,13 +119,11 @@ async def query_function(body: QueryRequest) -> StreamingResponse:
     # Basic attack protection: remove "[INST]" or "[/INST]" from the query
     query = re.sub(r"\[/?INST\]", "", query)
 
-    future = executor.submit(search_with_llm, query, generate_related_questions)
-    contexts, llm_response, related_questions_future = future.result()
+    results = search_with_llm(query, generate_related_questions)
 
-    return StreamingResponse(
-        _raw_stream_response(contexts, llm_response, related_questions_future),
-        media_type="text/html",
-    )
+    return StreamingResponse(_raw_stream_response(results), media_type="text/plain")
+
+
 
 app.mount("/ui", StaticFiles(directory="ui"), name="static")
 
