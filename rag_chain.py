@@ -21,10 +21,9 @@ import json
 # ===========================================================
 # set service keys
 NVAPI_KEY = 'nvapi-xxx'
-SEARCH_API_KEY_GOOGLE = "xxx"                                           # [Caution] Private Key here !
-SEARCH_ID_GOOGLE = "xxx" # cx parameter                                                    
-
-
+SEARCH_API_KEY_GOOGLE =  os.environ["GOOGLE_SEARCH_API_KEY"]
+SEARCH_ID_GOOGLE = os.environ["GOOGLE_SEARCH_ENGINE_ID"]                                                    
+MODEL_NAME = os.environ["MODEL_NAME"]     
 # ===========================================================
 # get Nvidia API key
 
@@ -33,10 +32,11 @@ if not os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi-"):
     os.environ["NVIDIA_API_KEY"] = NVAPI_KEY
 
 # Core LC Chat Interface
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+# from langchain_nvidia_ai_endpoints import ChatNVIDIA
+# llm = ChatNVIDIA(model=MODEL_NAME)
 
-llm = ChatNVIDIA(model="mixtral_8x7b")
-
+from langchain_community.llms import Ollama
+llm = Ollama(model=MODEL_NAME)
 
 # ===========================================================
 # Google Search Tool
