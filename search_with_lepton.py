@@ -15,11 +15,13 @@ from loguru import logger
 
 import leptonai
 from leptonai import Client
-from leptonai.kv import KV
+# from leptonai.kv import KV
 from leptonai.photon import Photon, StaticFiles
 from leptonai.photon.types import to_bool
 from leptonai.api.workspace import WorkspaceInfoLocalRecord
 from leptonai.util import tool
+
+import redis
 
 ################################################################################
 # Constant values for the RAG model.
@@ -116,6 +118,18 @@ def search_with_bing(query: str, subscription_key: str):
         return []
     return contexts
 
+def convert_google_to_bing(google_contexts):
+    bing_contexts = []
+    for id, item in enumerate(google_contexts):
+        bing_item = {
+            "id":  id, 
+            "name": item.get("title"),
+            "url": item.get("link"),
+            "snippet": item.get("htmlSnippet"),
+            "displayUrl": item.get("displayLink"),
+        }
+        bing_contexts.append(bing_item)
+    return bing_contexts
 
 def search_with_google(query: str, subscription_key: str, cx: str):
     """
@@ -136,6 +150,7 @@ def search_with_google(query: str, subscription_key: str, cx: str):
     json_content = response.json()
     try:
         contexts = json_content["items"][:REFERENCE_COUNT]
+        contexts = convert_google_to_bing(contexts)
     except KeyError:
         logger.error(f"Error encountered: {json_content}")
         return []
@@ -288,6 +303,30 @@ def search_with_searchapi(query: str, subscription_key: str):
         logger.error(f"Error encountered: {json_content}")
         return []
 
+# define a key-value client to remote redis-server. The major methods of this client are: put and get
+# put: put a key-value pair to the redis-server
+# get: get the value of a key from the redis-server
+class KV:
+    def __init__(self, redis_server_host: str, redis_server_port: int):
+        self.redis_server_host = redis_server_host
+        self.redis_server_port = redis_server_port
+        self.connect_to_redis_server()
+        
+    def connect_to_redis_server(self):
+        #create a redis client instance and connect to server
+        self.redis = redis.Redis(host=self.redis_server_host, port=self.redis_server_port, db=0)
+               
+                
+    def put(self, key: str, value: str):
+        #save key value to redis-server
+        self.redis.set(key, value)
+    
+    def get(self, key: str) -> str:
+        #get value from redis-server
+        v = self.redis.get(key)
+        if v: return v.decode('utf-8')
+        return ""
+    
 class RAG(Photon):
     """
     Retrieval-Augmented Generation Demo from Lepton AI.
@@ -365,8 +404,8 @@ class RAG(Photon):
             return thread_local.client
         except AttributeError:
             thread_local.client = openai.OpenAI(
-                base_url=f"https://{self.model}.lepton.run/api/v1/",
-                api_key=os.environ.get("LEPTON_WORKSPACE_TOKEN")
+                base_url=os.environ.get("OPENAI_BASE_URL", f"https://{self.model}.lepton.run/api/v1/"),
+                api_key= os.environ.get("OPENAI_API_KEY") or os.environ.get("LEPTON_WORKSPACE_TOKEN")
                 or WorkspaceInfoLocalRecord.get_current_workspace_token(),
                 # We will set the connect timeout to be 10 seconds, and read/write
                 # timeout to be 120 seconds, in case the inference server is
@@ -425,11 +464,12 @@ class RAG(Photon):
         # Create the KV to store the search results.
         logger.info("Creating KV. May take a while for the first time.")
         self.kv = KV(
-            os.environ["KV_NAME"], create_if_not_exists=True, error_if_exists=False
+            os.environ["REDIS_SERVER_HOST"], os.environ["REDIS_SERVER_PORT"]
         )
         # whether we should generate related questions.
         self.should_do_related_questions = to_bool(os.environ["RELATED_QUESTIONS"])
-
+        self.stream_mode = to_bool(os.environ["STREAM_MODE"])
+        
     def get_related_questions(self, query, contexts):
         """
         Gets related questions based on the query and context.
@@ -472,18 +512,20 @@ class RAG(Photon):
                 }],
                 max_tokens=512,
             )
-            related = response.choices[0].message.tool_calls[0].function.arguments
-            if isinstance(related, str):
-                related = json.loads(related)
-            logger.trace(f"Related questions: {related}")
-            return related["questions"][:5]
+            if response.choices[0].message.tool_calls:
+                related = response.choices[0].message.tool_calls[0].function.arguments
+                if isinstance(related, str):
+                    related = json.loads(related)
+                logger.trace(f"Related questions: {related}")
+                return related["questions"][:5]
+            return None
         except Exception as e:
             # For any exceptions, we will just return an empty list.
             logger.error(
                 "encountered error while generating related questions:"
                 f" {e}\n{traceback.format_exc()}"
             )
-            return []
+            return None
 
     def _raw_stream_response(
         self, contexts, llm_response, related_questions_future
@@ -503,13 +545,19 @@ class RAG(Photon):
                 "(The search engine returned nothing for this query. Please take the"
                 " answer with a grain of salt.)\n\n"
             )
-        for chunk in llm_response:
-            if chunk.choices:
-                yield chunk.choices[0].delta.content or ""
+            
+        if not self.stream_mode: 
+            yield llm_response.choices[0].message.content or ""
+        else:
+            for chunk in llm_response:
+                if chunk.choices:
+                    yield chunk.choices[0].delta.content or ""
+                    
         # Third, yield the related questions. If any error happens, we will just
         # return an empty list.
         if related_questions_future is not None:
             related_questions = related_questions_future.result()
+            logger.info(f"mydebug:  query related_questions result: {related_questions}")
             try:
                 result = json.dumps(related_questions)
             except Exception as e:
@@ -531,6 +579,7 @@ class RAG(Photon):
         ):
             all_yielded_results.append(result)
             yield result
+
         # Second, upload to KV. Note that if uploading to KV fails, we will silently
         # ignore it, because we don't want to affect the user experience.
         _ = self.executor.submit(self.kv.put, search_uuid, "".join(all_yielded_results))
@@ -561,11 +610,10 @@ class RAG(Photon):
         if search_uuid:
             try:
                 result = self.kv.get(search_uuid)
-
                 def str_to_generator(result: str) -> Generator[str, None, None]:
                     yield result
-
-                return StreamingResponse(str_to_generator(result))
+                if len(result.strip())>0:
+                    return StreamingResponse(str_to_generator(result))
             except KeyError:
                 logger.info(f"Key {search_uuid} not found, will generate again.")
             except Exception as e:
@@ -574,11 +622,12 @@ class RAG(Photon):
                 )
         else:
             raise HTTPException(status_code=400, detail="search_uuid must be provided.")
-
+        
         if self.backend == "LEPTON":
             # delegate to the lepton search api.
             result = self.leptonsearch_client.query(
                 query=query,
+                stream=False,
                 search_uuid=search_uuid,
                 generate_related_questions=generate_related_questions,
             )
@@ -589,7 +638,7 @@ class RAG(Photon):
         # Basic attack protection: remove "[INST]" or "[/INST]" from the query
         query = re.sub(r"\[/?INST\]", "", query)
         contexts = self.search_function(query)
-
+       
         system_prompt = _rag_query_text.format(
             context="\n\n".join(
                 [f"[[citation:{i+1}]] {c['snippet']}" for i, c in enumerate(contexts)]
@@ -605,7 +654,7 @@ class RAG(Photon):
                 ],
                 max_tokens=1024,
                 stop=stop_words,
-                stream=True,
+                stream=self.stream_mode,
                 temperature=0.9,
             )
             if self.should_do_related_questions and generate_related_questions:
@@ -613,13 +662,14 @@ class RAG(Photon):
                 # related questions as a future.
                 related_questions_future = self.executor.submit(
                     self.get_related_questions, query, contexts
-                )
+                )                
             else:
                 related_questions_future = None
         except Exception as e:
             logger.error(f"encountered error: {e}\n{traceback.format_exc()}")
             return HTMLResponse("Internal server error.", 503)
 
+        
         return StreamingResponse(
             self.stream_and_upload_to_kv(
                 contexts, llm_response, related_questions_future, search_uuid
@@ -637,8 +687,7 @@ class RAG(Photon):
         Redirects "/" to the ui page.
         """
         return RedirectResponse(url="/ui/index.html")
-
-
+    
 if __name__ == "__main__":
     rag = RAG()
     rag.launch()
